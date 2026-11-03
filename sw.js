@@ -3,7 +3,7 @@
  * (ข้อมูลรถของคุณอยู่ใน localStorage ไม่ได้อยู่ที่นี่)
  * เมื่อแก้ไฟล์แอป ให้เปลี่ยนเลข VERSION เพื่อให้เครื่องผู้ใช้โหลดไฟล์ใหม่
  */
-const VERSION = 'carinfo-v1.1.1';
+const VERSION = 'carinfo-v1.1.2';
 const FILES = [
   './',
   './index.html',
