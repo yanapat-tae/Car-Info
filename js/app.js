@@ -12,15 +12,18 @@
   const S = window.CarStore;
   const Charts = window.CarCharts;
 
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.1.0';
   const TABS = ['dashboard', 'fuel', 'service', 'settings'];
   const LAST_EXPORT_KEY = 'carinfo.lastExport';
+  const BACKUP_SNOOZE_KEY = 'carinfo.backupSnoozeUntil';
+  const BACKUP_EVERY_DAYS = 30; // เตือนสำรองข้อมูลถ้าไม่ได้สำรองนานกว่านี้
   const LOCALE = 'th-TH-u-ca-gregory'; // เดือนภาษาไทย ปี ค.ศ.
   const COLOR_FUEL = '#f0444f';    // สีกราฟ (ตรวจแล้วว่าแยกออกสำหรับคนตาบอดสี)
   const COLOR_SERVICE = '#2f9fd6';
 
   let state = S.load();
   let tab = 'dashboard';
+  let selectedYear = null; // ปีที่เลือกดูในสรุปรายปี
 
   /* ======================= ไอคอน ======================= */
   const ICON_PATHS = {
@@ -46,7 +49,10 @@
     upload: '<path d="M12 20V9M7 14l5-5 5 5M5 4h14"/>',
     alert: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
     clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
-    check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>'
+    check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    spring: '<path d="M8 3h8M8 21h8"/><path d="M9 5.5l6 2-6 2.5 6 2.5-6 2.5 6 2"/>',
+    spray: '<rect x="7" y="8" width="8" height="13" rx="1.5"/><path d="M9 8V4h4v4M17 5h1M17 8h3M17 11h1"/>',
+    note: '<path d="M6 3h9l4 4v14H6z"/><path d="M9 10h7M9 14h7M9 18h4"/>'
   };
   function icon(name) {
     return '<svg viewBox="0 0 24 24" aria-hidden="true">' + (ICON_PATHS[name] || '') + '</svg>';
@@ -71,6 +77,8 @@
     { id: 'inspection', label: 'เช็กระยะ', icon: 'gauge' },
     { id: 'tax', label: 'ต่อภาษี / พ.ร.บ.', icon: 'doc' },
     { id: 'insurance', label: 'ประกันภัย', icon: 'shield' },
+    { id: 'suspension', label: 'ช่วงล่าง / พวงมาลัย', icon: 'spring' },
+    { id: 'body', label: 'ทำสี / ตัวถัง', icon: 'spray' },
     { id: 'other', label: 'อื่นๆ', icon: 'wrench' }
   ];
   const TYPE_BY_ID = {};
@@ -201,6 +209,7 @@
     const month = C.monthlyCosts(d.fuel, d.services, 1, todayStr())[0];
     const monthTotal = month.fuel + month.service;
     let h = '<h1 class="page-title">' + esc(v.name) + '</h1>';
+    h += backupBanner();
 
     // Hero: อัตราสิ้นเปลืองเฉลี่ย
     h += '<section class="card glass hero">';
@@ -260,6 +269,7 @@
     } else {
       h += '<div class="notice">ยังไม่มีค่าใช้จ่ายใน 6 เดือนล่าสุด</div>';
     }
+    h += yearlyView(d);
     return h;
   }
 
@@ -373,11 +383,12 @@
     if (d.reminders.length) h += '<div class="list glass">' + d.reminders.map(reminderItem).join('') + '</div>';
     else h += '<div class="notice">ยังไม่มีกำหนดครั้งถัดไป — ใส่ “ครั้งถัดไป (km / วันที่)” ในฟอร์มซ่อมบำรุง แล้วแอปจะเตือนเมื่อเหลือไม่ถึง 1,000 km หรือ 30 วัน</div>';
 
-    h += '<h2 class="section-title">ประวัติ</h2>';
+    h += '<h2 class="section-title">ประวัติ <button class="link" data-action="import-notes">วางจากโน้ต</button></h2>';
     if (!d.services.length) {
       h += '<div class="card glass empty"><div class="empty-icon">' + icon('wrench') + '</div><h3>ยังไม่มีบันทึก</h3>' +
-        '<p>จดการเปลี่ยนน้ำมันเครื่อง ยาง แบตเตอรี่ ภาษี ฯลฯ</p>' +
-        '<button class="btn btn-primary" data-action="add-service">' + icon('plus') + 'เพิ่มรายการซ่อมบำรุง</button></div>';
+        '<p>จดการเปลี่ยนน้ำมันเครื่อง ยาง แบตเตอรี่ ภาษี ฯลฯ<br>เคยจดไว้ในโน้ต? ก๊อปมาวางได้เลย</p>' +
+        '<div class="btn-row"><button class="btn btn-primary" data-action="add-service">' + icon('plus') + 'เพิ่มรายการ</button>' +
+        '<button class="btn" data-action="import-notes">' + icon('note') + 'วางจากโน้ต</button></div></div>';
       return h;
     }
     const sorted = d.services.slice().sort(function (a, b) {
@@ -436,6 +447,7 @@
       '<div class="btn-row">' +
       '<button class="btn btn-sm" data-action="export-csv-fuel">CSV น้ำมัน</button>' +
       '<button class="btn btn-sm" data-action="export-csv-service">CSV ซ่อมบำรุง</button></div>' +
+      '<button class="btn btn-sm btn-block" data-action="import-notes">' + icon('note') + 'นำเข้าประวัติซ่อมบำรุงจากโน้ต (ข้อความ)</button>' +
       '<p class="hint">CSV เปิดใน Excel / Google Sheets ได้ (เฉพาะรถที่เลือกอยู่) · ไฟล์สำรอง (.json) ใช้สำหรับนำกลับเข้าแอป</p>' +
       (backup ? '<button class="btn btn-sm" data-action="undo-import">ย้อนกลับเป็นข้อมูลก่อนนำเข้า (' + esc(fmtIso(backup.savedAt)) + ')</button>' : '') +
       '</section>';
@@ -453,6 +465,171 @@
     h += '<section class="card glass"><button class="btn btn-danger btn-block" data-action="clear-all">ลบข้อมูลทั้งหมดในเครื่องนี้</button></section>';
     h += '<p class="hint" style="text-align:center">Car Info v' + APP_VERSION + '</p>';
     return h;
+  }
+
+  /* ---------- เตือนสำรองข้อมูล ---------- */
+  function daysSinceBackup() {
+    let last = null;
+    try { last = localStorage.getItem(LAST_EXPORT_KEY); } catch (e) { /* ignore */ }
+    if (!last || isNaN(new Date(last))) return null;
+    return Math.floor((Date.now() - new Date(last).getTime()) / 86400000);
+  }
+
+  function backupBanner() {
+    const count = state.fuelLogs.length + state.services.length;
+    if (!count) return '';
+    const days = daysSinceBackup();
+    if (days !== null && days < BACKUP_EVERY_DAYS) return '';
+    let snooze = 0;
+    try { snooze = Number(localStorage.getItem(BACKUP_SNOOZE_KEY)) || 0; } catch (e) { /* ignore */ }
+    if (snooze > Date.now()) return '';
+    const msg = days === null
+      ? 'ยังไม่เคยสำรองข้อมูล (' + fmtNum(count) + ' รายการ)'
+      : 'ไม่ได้สำรองข้อมูลมา ' + fmtNum(days) + ' วัน';
+    return '<section class="card glass backup-banner" role="status">' +
+      '<div class="backup-text"><span class="item-icon">' + icon('alert') + '</span><div><b>' + esc(msg) + '</b>' +
+      '<div class="small muted">ข้อมูลอยู่ในเครื่องนี้เท่านั้น ส่งออกเก็บไว้ใน Files / iCloud กันข้อมูลหาย</div></div></div>' +
+      '<div class="btn-row"><button class="btn btn-primary btn-sm" data-action="export-json">' + icon('download') + 'สำรองตอนนี้</button>' +
+      '<button class="btn btn-sm" data-action="snooze-backup">เตือนอีก 7 วัน</button></div></section>';
+  }
+
+  /* ---------- สรุปรายปี ---------- */
+  function yearlyView(d) {
+    const years = C.yearlySummary(d.fuel, d.services);
+    if (!years.length) return '';
+    if (!selectedYear || !years.some(function (y) { return y.year === selectedYear; })) selectedYear = years[years.length - 1].year;
+    const anyCost = years.some(function (y) { return y.fuel + y.service > 0; });
+
+    let h = '<h2 class="section-title">สรุปรายปี</h2>';
+    h += '<section class="card glass">';
+    if (anyCost) {
+      h += '<div class="legend"><span><i style="background:var(--chart-fuel)"></i>น้ำมัน</span>' +
+        '<span><i style="background:var(--chart-service)"></i>ซ่อมบำรุง</span></div><div class="chart" id="chartYear"></div>';
+    } else {
+      h += '<div class="notice">ยังไม่มีค่าใช้จ่ายที่ใส่ราคาไว้ — แตะรายการในหน้าซ่อมบำรุงเพื่อเพิ่มราคา แล้วกราฟจะขึ้น</div>';
+    }
+    h += '<details class="table-view"' + (anyCost ? '' : ' open') + '><summary>ดูเป็นตาราง</summary><table><thead><tr>' +
+      '<th>ปี</th><th>น้ำมัน</th><th>ซ่อม</th><th>รวม</th><th>ระยะ (km)</th></tr></thead><tbody>' +
+      years.slice().reverse().map(function (y) {
+        return '<tr><td>' + esc(y.year) + '</td><td>' + fmtMoney(y.fuel, 0) + '</td><td>' + fmtMoney(y.service, 0) +
+          '</td><td>' + fmtMoney(y.fuel + y.service, 0) + '</td><td>' + (y.distance !== null ? fmtNum(y.distance) : '–') + '</td></tr>';
+      }).join('') + '</tbody></table></details>';
+
+    // รายละเอียดปีที่เลือก
+    const y = years.find(function (x) { return x.year === selectedYear; });
+    const total = y.fuel + y.service;
+    h += '<div class="chips" style="margin-top:14px" role="group" aria-label="เลือกปี">' + years.map(function (x) {
+      return '<button type="button" class="chip' + (x.year === selectedYear ? ' active' : '') + '" data-action="pick-year" data-year="' +
+        esc(x.year) + '" aria-pressed="' + (x.year === selectedYear) + '">' + esc(x.year) + '</button>';
+    }).join('') + '</div>';
+    h += '<div class="tiles" style="margin:12px 0 4px">' +
+      tile('รวมปี ' + y.year, fmtMoney(total, 0), '', 'น้ำมัน ' + fmtMoney(y.fuel, 0) + ' · ซ่อม ' + fmtMoney(y.service, 0)) +
+      tile('ระยะทาง', y.distance !== null ? fmtNum(y.distance) : '–', 'km', 'คิดจากเลขไมล์ที่จดไว้') +
+      tile('ค่าใช้จ่าย/km', y.distance && total > 0 ? fmtMoney(total / y.distance, 2) : '–', '') +
+      tile('งานซ่อมบำรุง', fmtNum(y.serviceCount), 'ครั้ง', y.fillCount ? 'เติมน้ำมัน ' + fmtNum(y.fillCount) + ' ครั้ง' : '') +
+      '</div>';
+
+    const byType = {};
+    d.services.forEach(function (s) {
+      if (String(s.date).slice(0, 4) !== y.year) return;
+      const k = TYPE_BY_ID[s.type] ? s.type : 'other';
+      const r = byType[k] || (byType[k] = { type: k, count: 0, cost: 0 });
+      r.count++; r.cost += C.toNum(s.cost) || 0;
+    });
+    const rows = Object.keys(byType).map(function (k) { return byType[k]; })
+      .sort(function (a, b) { return (b.cost - a.cost) || (b.count - a.count); });
+    if (rows.length) {
+      h += '<table style="margin-top:8px"><thead><tr><th>ประเภทงาน ' + esc(y.year) + '</th><th>ครั้ง</th><th>ค่าใช้จ่าย</th></tr></thead><tbody>' +
+        rows.map(function (r) {
+          return '<tr><td>' + esc(TYPE_BY_ID[r.type].label) + '</td><td>' + fmtNum(r.count) + '</td><td>' + (r.cost > 0 ? fmtMoney(r.cost, 0) : '–') + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    if (y.missingCost) {
+      h += '<p class="hint">' + fmtNum(y.missingCost) + ' รายการในปีนี้ยังไม่มีราคา จึงไม่ถูกรวมในยอด — แตะรายการในหน้าซ่อมบำรุงเพื่อเพิ่มราคา</p>';
+    }
+    h += '</section>';
+    return h;
+  }
+
+  /* ---------- นำเข้าจากโน้ต ---------- */
+  function openNotesImport() {
+    const v = activeVehicle();
+    if (!v) { toast('เพิ่มรถก่อน แล้วค่อยนำเข้า'); return; }
+    let parsed = null;
+    openSheet('นำเข้าจากโน้ต',
+      '<div class="form">' +
+      '<p class="hint" style="margin:0">ก๊อปข้อความจากแอปโน้ตมาวาง 1 บรรทัดต่อ 1 รายการ รูปแบบ:<br>' +
+      '<code>วันที่ &nbsp; เลขไมล์ &nbsp; รายละเอียด</code> เช่น <code>12/5/2024 135600 เปลี่ยนน้ำมันเครื่อง ที่ ร้าน A</code><br>' +
+      'เลขไมล์เว้นว่างได้ · ปี พ.ศ. ก็ได้ · บรรทัดหัวตารางจะถูกข้าม · จะนำเข้าให้รถ <b>' + esc(v.name) + '</b></p>' +
+      field('ข้อความ', '<textarea id="notesText" rows="8" placeholder="วางข้อความที่นี่"></textarea>') +
+      '<button type="button" class="btn btn-block" id="notesParse">อ่านข้อมูล</button>' +
+      '<div id="notesPreview"></div></div>');
+
+    $('#notesParse').addEventListener('click', function () {
+      parsed = C.parseServiceNotes($('#notesText').value, servicesFor(v.id));
+      renderPreview();
+    });
+
+    function renderPreview() {
+      const box = $('#notesPreview');
+      if (!parsed.rows.length) {
+        box.innerHTML = '<p class="form-error">ไม่พบรายการที่อ่านได้ — ตรวจว่าแต่ละบรรทัดขึ้นต้นด้วยวันที่ เช่น 23/3/2024</p>';
+        return;
+      }
+      const dup = parsed.rows.filter(function (r) { return r.duplicate; }).length;
+      let h = '<p class="small" style="margin:6px 2px">พบ <b>' + parsed.rows.length + '</b> รายการ' +
+        (dup ? ' · ซ้ำกับที่มีอยู่ ' + dup + ' รายการ (ไม่ติ๊กไว้ให้)' : '') +
+        (parsed.skipped.length ? ' · ข้าม ' + parsed.skipped.length + ' บรรทัดที่ไม่มีวันที่' : '') +
+        '<br><span class="muted">ตรวจ “ประเภท” ที่แอปเดาให้ เปลี่ยนได้ก่อนกดนำเข้า</span></p>';
+      h += '<div class="list glass import-list">' + parsed.rows.map(function (r, i) {
+        return '<div class="item import-row">' +
+          '<input type="checkbox" data-i="' + i + '"' + (r.duplicate ? '' : ' checked') + ' aria-label="นำเข้ารายการ ' + esc(fmtDate(r.date)) + '">' +
+          '<div class="item-main"><div class="item-title">' + esc(fmtDate(r.date)) + ' <span class="muted small">' +
+          (r.odometer !== null ? fmtNum(r.odometer) + ' km' : r.odoNote ? esc(r.odoNote) + ' km (ไม่ครบ)' : 'ไม่มีเลขไมล์') + '</span>' +
+          (r.duplicate ? ' <span class="badge soon">มีแล้ว</span>' : '') + '</div>' +
+          '<div class="item-sub">' + esc(r.title) + (r.shop ? ' <span class="muted">· ' + esc(r.shop) + '</span>' : '') + '</div>' +
+          '<select class="type-pick" data-i="' + i + '" aria-label="ประเภท">' + SERVICE_TYPES.map(function (t) {
+            return '<option value="' + t.id + '"' + (t.id === r.type ? ' selected' : '') + '>' + esc(t.label) + '</option>';
+          }).join('') + '</select></div></div>';
+      }).join('') + '</div>';
+      h += '<button type="button" class="btn btn-primary btn-block" id="notesImport" style="margin-top:12px"></button>';
+      box.innerHTML = h;
+      updateCount();
+      box.addEventListener('change', function (e) {
+        const i = e.target.dataset.i;
+        if (i === undefined) return;
+        if (e.target.classList.contains('type-pick')) parsed.rows[+i].type = e.target.value;
+        updateCount();
+      });
+      $('#notesImport').addEventListener('click', doImport);
+    }
+
+    function chosen() {
+      return $$('#notesPreview input[type=checkbox]').filter(function (c) { return c.checked; })
+        .map(function (c) { return parsed.rows[+c.dataset.i]; });
+    }
+    function updateCount() {
+      const n = chosen().length;
+      const b = $('#notesImport');
+      b.textContent = 'นำเข้า ' + n + ' รายการ';
+      b.disabled = n === 0;
+    }
+    function doImport() {
+      const rows = chosen();
+      if (!rows.length) return;
+      rows.forEach(function (r) {
+        state.services.push({
+          id: S.uid(), vehicleId: v.id, type: r.type, title: r.title, date: r.date,
+          odometer: r.odometer, cost: null, shop: r.shop,
+          note: r.odoNote ? 'เลขไมล์ในโน้ต: ' + r.odoNote : '',
+          nextKm: null, nextDate: null, source: 'notes'
+        });
+      });
+      persist(); closeSheet();
+      location.hash = '#service';
+      render();
+      toast('นำเข้า ' + rows.length + ' รายการแล้ว — อย่าลืมสำรองข้อมูล');
+    }
   }
 
   /* ======================= กราฟ ======================= */
@@ -481,6 +658,19 @@
           return fmtMoney(v, 0);
         },
         ariaLabel: 'กราฟแท่งค่าใช้จ่ายรายเดือน 6 เดือนล่าสุด แยกน้ำมันและซ่อมบำรุง'
+      });
+    }
+    const yearEl = $('#chartYear');
+    if (yearEl) {
+      const years = C.yearlySummary(data.fuel, data.services);
+      Charts.stackedBars(yearEl, years.map(function (y) {
+        return { label: y.year, title: 'ปี ' + y.year, values: [y.fuel, y.service] };
+      }), [{ name: 'น้ำมัน', color: COLOR_FUEL }, { name: 'ซ่อมบำรุง', color: COLOR_SERVICE }], {
+        format: function (v, full) {
+          if (!full && v >= 10000) return '฿' + fmtNum(v / 1000, v >= 100000 ? 0 : 1) + 'k';
+          return fmtMoney(v, 0);
+        },
+        ariaLabel: 'กราฟแท่งค่าใช้จ่ายรายปี แยกน้ำมันและซ่อมบำรุง'
       });
     }
   }
@@ -908,6 +1098,11 @@
       case 'export-csv-service': return exportCSV('service');
       case 'undo-import': return undoImport();
       case 'clear-all': return clearAll();
+      case 'import-notes': return openNotesImport();
+      case 'pick-year': selectedYear = btn.dataset.year; return render();
+      case 'snooze-backup':
+        try { localStorage.setItem(BACKUP_SNOOZE_KEY, String(Date.now() + 7 * 86400000)); } catch (err) { /* ignore */ }
+        return render();
     }
   });
 

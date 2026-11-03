@@ -115,3 +115,40 @@ test('CSV: escape เครื่องหมายคำพูด/จุลภ�
   ]);
   assert.equal(csv, 'A,B,C\r\n"x,""y""",\'=SUM(1),-5');
 });
+
+test('นำเข้าจากโน้ต: แยกวันที่ เลขไมล์ ประเภท และร้าน', () => {
+  const text = [
+    'Service Record',
+    'Date\tKm\tEvent',
+    '1/2/2024\t10000\tเปลี่ยนน้ำมันเครื่อง 5W-30 ที่ ร้านเอ',
+    '15/3/2024\t\tเปลี่ยนกรองแอร์ ใบปัดน้ำฝน',
+    '2/4/2024  12xxx  เปลี่ยนโช็คหน้า',
+    '05/05/2567 13000 เปลี่ยนแบตเตอรี่',
+    '9/9/2024 14000 ติดตั้งของ ที่ Shop A เปลี่ยนน้ำมันเกียร์',
+    '31/2/2024 1 วันที่ไม่มีจริง'
+  ].join('\n');
+  const r = C.parseServiceNotes(text, [{ date: '2024-03-15', title: 'เปลี่ยนกรองแอร์ ใบปัดน้ำฝน' }]);
+  assert.equal(r.rows.length, 5);
+  assert.deepEqual(r.rows[0], { line: 3, date: '2024-02-01', odometer: 10000, odoNote: '', title: 'เปลี่ยนน้ำมันเครื่อง 5W-30', shop: 'ร้านเอ', type: 'oil', duplicate: false });
+  assert.equal(r.rows[1].odometer, null);
+  assert.equal(r.rows[1].type, 'cabin_filter');
+  assert.equal(r.rows[1].duplicate, true, 'มีอยู่แล้ว -> ไม่นำเข้าซ้ำ');
+  assert.equal(r.rows[2].odometer, null, 'เลขไมล์ไม่ครบ -> ไม่เดา');
+  assert.equal(r.rows[2].odoNote, '12xxx');
+  assert.equal(r.rows[2].type, 'suspension');
+  assert.equal(r.rows[3].date, '2024-05-05', 'ปี พ.ศ. แปลงเป็น ค.ศ.');
+  assert.equal(r.rows[3].type, 'battery');
+  assert.equal(r.rows[4].shop, '', 'ไม่ตัดชื่อร้านกลางประโยค');
+  assert.equal(r.skipped.length, 3);
+});
+
+test('สรุปรายปี: ค่าใช้จ่าย ระยะทาง และรายการที่ไม่มีราคา', () => {
+  const y = C.yearlySummary(
+    [{ date: '2025-01-10', odometer: 20000, liters: 40, total: 1400 }, { date: '2025-12-20', odometer: 30000, liters: 40, total: 1500 }],
+    [{ date: '2024-03-01', odometer: 12000, cost: 2000 }, { date: '2024-11-01', odometer: 18000 }, { date: '2025-06-01', odometer: 25000, cost: 900 }]
+  );
+  assert.deepEqual(y.map(r => [r.year, r.fuel, r.service, r.missingCost, r.distance]), [
+    ['2024', 0, 2000, 1, 6000],
+    ['2025', 2900, 900, 0, 12000]
+  ]);
+});
