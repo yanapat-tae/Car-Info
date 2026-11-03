@@ -1,0 +1,117 @@
+// เทสต์สูตรคำนวณ — รันด้วยคำสั่ง: npm test  (หรือ node --test tests/)
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const C = require('../js/calc.js');
+
+const close = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
+
+test('full-to-full: ช่วงพื้นฐาน 500 km / 35 L', () => {
+  const r = C.computeFuelEconomy([
+    { id: 'a', date: '2026-01-01', odometer: 10000, liters: 40, total: 1400, full: true },
+    { id: 'b', date: '2026-01-10', odometer: 10500, liters: 35, total: 1225, full: true }
+  ]);
+  assert.equal(r.segments.length, 1);
+  close(r.segments[0].kmPerL, 500 / 35);
+  close(r.segments[0].lPer100km, 7);
+  close(r.segments[0].costPerKm, 1225 / 500);
+  assert.equal(r.byLogId.b.distance, 500);
+  assert.equal(r.byLogId.a, undefined, 'การเติมครั้งแรกยังคำนวณไม่ได้');
+});
+
+test('เติมไม่เต็มถังระหว่างทาง: ลิตรถูกรวมเข้าช่วงเดียวกัน', () => {
+  const r = C.computeFuelEconomy([
+    { id: 'a', date: '2026-01-01', odometer: 10000, liters: 40, total: 1400, full: true },
+    { id: 'b', date: '2026-01-05', odometer: 10200, liters: 10, total: 350, full: false },
+    { id: 'c', date: '2026-01-10', odometer: 10600, liters: 30, total: 1050, full: true }
+  ]);
+  assert.equal(r.segments.length, 1);
+  close(r.segments[0].liters, 40);
+  close(r.segments[0].kmPerL, 600 / 40);
+  close(r.segments[0].cost, 1400);
+});
+
+test('ลืมจดครั้งก่อน: ช่วงนั้นไม่นำมาคิด แต่ช่วงถัดไปคิดได้', () => {
+  const r = C.computeFuelEconomy([
+    { id: 'a', date: '2026-01-01', odometer: 10000, liters: 40, total: 1400, full: true },
+    { id: 'b', date: '2026-01-20', odometer: 11000, liters: 30, total: 1050, full: true, missed: true },
+    { id: 'c', date: '2026-01-30', odometer: 11450, liters: 30, total: 1050, full: true }
+  ]);
+  assert.equal(r.segments.length, 1);
+  assert.equal(r.segments[0].endLogId, 'c');
+  close(r.segments[0].kmPerL, 15);
+});
+
+test('บันทึกไม่เรียงลำดับ: เรียงตามเลขไมล์ก่อนคำนวณ', () => {
+  const r = C.computeFuelEconomy([
+    { id: 'c', date: '2026-01-30', odometer: 11000, liters: 40, total: 0, full: true },
+    { id: 'a', date: '2026-01-01', odometer: 10000, liters: 40, total: 1400, full: true },
+    { id: 'b', date: '2026-01-15', odometer: 10500, liters: 25, total: 875, full: true }
+  ]);
+  assert.equal(r.segments.length, 2);
+  close(r.segments[0].kmPerL, 20);
+  close(r.segments[1].kmPerL, 12.5);
+  assert.equal(r.segments[1].costPerKm, null, 'ไม่มีราคา -> ไม่เดาค่าใช้จ่าย');
+  // ค่าเฉลี่ยถ่วงน้ำหนักด้วยระยะทาง: 1000 km / 65 L
+  close(r.summary.avgKmPerL, 1000 / 65);
+  close(r.summary.avgCostPerKm, 875 / 500);
+  assert.equal(r.summary.best.endLogId, 'b');
+  assert.equal(r.summary.worst.endLogId, 'c');
+  assert.equal(r.summary.last.endLogId, 'c');
+});
+
+test('ไม่มีข้อมูลพอ: ค่าเฉลี่ยเป็น null ไม่ใช่ 0', () => {
+  const r = C.computeFuelEconomy([{ id: 'a', date: '2026-01-01', odometer: 1, liters: 10, total: 300, full: true }]);
+  assert.equal(r.summary.avgKmPerL, null);
+  assert.equal(r.summary.totalSpent, 300);
+  close(r.summary.avgPricePerL, 30);
+});
+
+test('คำนวณช่องที่สามของ ลิตร/ราคา/ยอดเงิน', () => {
+  assert.equal(C.completeFuelAmounts({ liters: 30, price: 35.5 }, 'total'), 1065);
+  assert.equal(C.completeFuelAmounts({ total: 1000, price: 40 }, 'liters'), 25);
+  assert.equal(C.completeFuelAmounts({ total: '1,000', liters: '30' }, 'price'), 33.33);
+  assert.equal(C.completeFuelAmounts({ liters: 30 }, 'total'), null);
+});
+
+test('addMonths ปัดวันสิ้นเดือน และข้ามปี', () => {
+  assert.equal(C.addMonths('2026-01-31', 1), '2026-02-28');
+  assert.equal(C.addMonths('2026-11-15', 6), '2027-05-15');
+  assert.equal(C.addMonths('2026-03-01', -3), '2025-12-01');
+});
+
+test('แจ้งเตือน: ใช้บันทึกล่าสุดของแต่ละประเภท และจัดสถานะถูกต้อง', () => {
+  const services = [
+    { id: 1, type: 'oil', date: '2026-01-01', odometer: 10000, nextKm: 15000 },
+    { id: 2, type: 'oil', date: '2026-06-01', odometer: 15000, nextKm: 20000, nextDate: '2026-12-01' },
+    { id: 3, type: 'battery', date: '2024-01-01', odometer: 1000, nextDate: '2026-10-01' },
+    { id: 4, type: 'tires', date: '2025-01-01', odometer: 5000, nextKm: 60000 },
+    { id: 5, type: 'brakes', date: '2025-01-01', odometer: 5000 }
+  ];
+  const r = C.computeReminders(services, 19500, '2026-11-03');
+  assert.deepEqual(r.map(x => [x.key, x.status]), [
+    ['battery', 'overdue'],
+    ['oil', 'soon'],
+    ['tires', 'ok']
+  ]);
+  const oil = r.find(x => x.key === 'oil');
+  assert.equal(oil.service.id, 2);
+  assert.equal(oil.kmLeft, 500);
+  assert.equal(oil.daysLeft, 28);
+});
+
+test('ค่าใช้จ่ายรายเดือน 6 เดือนล่าสุด', () => {
+  const m = C.monthlyCosts(
+    [{ date: '2026-11-01', total: 1000 }, { date: '2026-06-30', total: 500 }, { date: '2026-05-31', total: 999 }],
+    [{ date: '2026-11-02', cost: 2500 }],
+    6, '2026-11-03');
+  assert.deepEqual(m.map(x => x.month), ['2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11']);
+  assert.deepEqual(m[0], { month: '2026-06', fuel: 500, service: 0 });
+  assert.deepEqual(m[5], { month: '2026-11', fuel: 1000, service: 2500 });
+});
+
+test('CSV: escape เครื่องหมายคำพูด/จุลภาค และกันสูตร Excel', () => {
+  const csv = C.toCSV([{ a: 'x,"y"', b: '=SUM(1)', c: -5 }], [
+    { label: 'A', key: 'a' }, { label: 'B', key: 'b' }, { label: 'C', key: 'c' }
+  ]);
+  assert.equal(csv, 'A,B,C\r\n"x,""y""",\'=SUM(1),-5');
+});
