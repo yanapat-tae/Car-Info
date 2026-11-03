@@ -279,7 +279,152 @@
     return [head].concat(body).join('\r\n');
   }
 
+  /* ------------------------------------------------------------
+   * นำเข้าประวัติซ่อมบำรุงจากข้อความ (เช่น ก๊อปจากแอปโน้ต)
+   * รูปแบบต่อบรรทัด:  วันที่   เลขไมล์(ไม่บังคับ)   รายละเอียด
+   *   23/3/2024   132100   เปลี่ยนน้ำมันเครื่อง ที่ ร้าน A
+   * ------------------------------------------------------------ */
+
+  // คำค้นสำหรับเดาประเภทงาน — ประเภทที่คำค้นโผล่ "เร็วที่สุด" ในข้อความจะถูกเลือก
+  const TYPE_KEYWORDS = [
+    ['oil_filter', /กรองน้ำมันเครื่อง|oil filter/i],
+    ['oil', /น้ำมันเครื่อง|engine oil/i],
+    ['transmission', /น้ำมันเกียร์|กรองเกียร์|\bATF\b|เกียร์/i],
+    ['coolant', /น้ำหล่อเย็น|น้ำยาหล่อเย็น|หม้อน้ำ|coolant/i],
+    ['brake_fluid', /น้ำมันเบร[คก]|brake fluid/i],
+    ['brakes', /ผ้าเบร[คก]|จานเบร[คก]|สายถักเบร[คก]|เบร[คก]/i],
+    ['cabin_filter', /กรองแอร์|cabin filter/i],
+    ['air_filter', /กรองอากาศ|air filter/i],
+    ['wipers', /ใบปัด/i],
+    ['battery', /แบตเตอร[ีี่]|แบต\b|battery/i],
+    ['alignment', /ตั้งศูนย์|ถ่วงล้อ|สลับยาง/i],
+    ['tires', /เปลี่ยนยาง|ยางใหม่|\btires?\b|\btyres?\b/i],
+    ['spark_plugs', /หัวเทียน|spark plug/i],
+    ['ac', /แอร์|air ?con/i],
+    ['suspension', /โช[็๊]?[คค]|ช่วงล่าง|ลูกหมา[กย]|แร็[คค]|พวงมาลัย|คันชัก|ปีกนก|บูช/i],
+    ['body', /ทำสี|พ่นสี|ตัวถัง|เคาะ|ซ่อมสี/i],
+    ['tax', /ภาษี|พ\.?ร\.?บ|ต่อทะเบียน/i],
+    ['insurance', /ประกัน/i],
+    ['inspection', /เช[็ค]?[คก]ระยะ/i]
+  ];
+
+  function classifyService(text) {
+    let best = null;
+    TYPE_KEYWORDS.forEach(function (pair) {
+      const m = pair[1].exec(text);
+      if (!m) return;
+      if (!best || m.index < best.index || (m.index === best.index && m[0].length > best.len)) {
+        best = { type: pair[0], index: m.index, len: m[0].length };
+      }
+    });
+    return best ? best.type : 'other';
+  }
+
+  function parseNoteDate(d, m, y) {
+    let year = +y;
+    if (String(y).length <= 2) year += 2000;
+    if (year > 2400) year -= 543; // ปี พ.ศ. -> ค.ศ.
+    const day = +d, mon = +m;
+    if (mon < 1 || mon > 12 || day < 1) return null;
+    const last = new Date(Date.UTC(year, mon, 0)).getUTCDate();
+    if (day > last) return null;
+    return year + '-' + pad(mon) + '-' + pad(day);
+  }
+
+  /**
+   * แปลงข้อความเป็นรายการซ่อมบำรุง (ยังไม่บันทึก)
+   * existing = รายการเดิมของรถคันนี้ ใช้ตรวจว่าเคยนำเข้าแล้วหรือยัง
+   * คืน [{ line, date, odometer, odoNote, title, shop, type, duplicate }] และ skipped = บรรทัดที่อ่านไม่ได้
+   */
+  function parseServiceNotes(text, existing) {
+    const seen = {};
+    (existing || []).forEach(function (s) { seen[s.date + '|' + String(s.title || '').trim()] = true; });
+    const rows = [];
+    const skipped = [];
+    String(text || '').split(/\r?\n/).forEach(function (raw, i) {
+      const line = raw.trim();
+      if (!line) return;
+      const dm = /^(\d{1,2})\s*[\/.\-]\s*(\d{1,2})\s*[\/.\-]\s*(\d{2,4})(?=\s|$)\s*(.*)$/.exec(line);
+      if (!dm) { skipped.push(line); return; }
+      const date = parseNoteDate(dm[1], dm[2], dm[3]);
+      if (!date) { skipped.push(line); return; }
+
+      let rest = dm[4].trim();
+      let odometer = null;
+      let odoNote = '';
+      const km = /^(\d[\d,]*[xX]*)(?:\s*(?:km|กม\.?))?(?:\s+|$)(.*)$/.exec(rest);
+      if (km) {
+        if (/[xX]/.test(km[1])) odoNote = km[1]; // เลขไมล์ไม่ครบ (เช่น 135xxx) -> ไม่เดา เก็บไว้ในหมายเหตุ
+        else odometer = toNum(km[1]);
+        rest = km[2].trim();
+      }
+      if (!rest) { skipped.push(line); return; }
+
+      // "... ที่ ร้าน X" ท้ายประโยค -> ชื่อร้าน
+      // ยอมรับเมื่ออยู่ท้ายบรรทัด สั้น และไม่มีคำบอกงาน (กันตัดผิดกลางประโยค)
+      let title = rest;
+      let shop = '';
+      const at = /^(.*\S)\s+ที่\s+([^,]+)$/.exec(rest) || /^(.*\S)ที่\s*([A-Za-z0-9][^,]*)$/.exec(rest);
+      if (at && at[2].trim().length <= 40 && !/เปลี่|เปลี้|ล้าง|เติม|ซ่อม/.test(at[2])) {
+        title = at[1].trim(); shop = at[2].trim();
+      }
+
+      rows.push({
+        line: i + 1,
+        date: date,
+        odometer: odometer,
+        odoNote: odoNote,
+        title: title,
+        shop: shop,
+        type: classifyService(rest),
+        duplicate: !!seen[date + '|' + title]
+      });
+    });
+    return { rows: rows, skipped: skipped };
+  }
+
+  /**
+   * สรุปรายปี: ค่าน้ำมัน, ค่าซ่อมบำรุง, จำนวนรายการ, รายการที่ไม่มีราคา, ระยะทาง
+   * ระยะทางของปี = เลขไมล์สูงสุดที่จดได้ถึงสิ้นปีนั้น − ของสิ้นปีก่อน
+   * (ปีแรกใช้เลขไมล์ต่ำสุดของปีนั้นเป็นจุดเริ่ม)
+   */
+  function yearlySummary(fuelLogs, services) {
+    const map = {};
+    const odoPoints = [];
+    function yr(y) { return map[y] || (map[y] = { year: y, fuel: 0, service: 0, liters: 0, fillCount: 0, serviceCount: 0, missingCost: 0, distance: null }); }
+    (fuelLogs || []).forEach(function (l) {
+      const y = String(l.date || '').slice(0, 4); if (!/^\d{4}$/.test(y)) return;
+      const r = yr(y); const t = toNum(l.total);
+      if (t > 0) r.fuel += t;
+      r.liters += toNum(l.liters) || 0; r.fillCount++;
+      if (toNum(l.odometer) !== null) odoPoints.push([l.date, toNum(l.odometer)]);
+    });
+    (services || []).forEach(function (s) {
+      const y = String(s.date || '').slice(0, 4); if (!/^\d{4}$/.test(y)) return;
+      const r = yr(y); const t = toNum(s.cost);
+      r.serviceCount++;
+      if (t > 0) r.service += t; else r.missingCost++;
+      if (toNum(s.odometer) !== null) odoPoints.push([s.date, toNum(s.odometer)]);
+    });
+    const years = Object.keys(map).sort();
+    let prevEnd = null;
+    years.forEach(function (y) {
+      let end = null, minIn = null;
+      odoPoints.forEach(function (p) {
+        if (p[0] <= y + '-12-31' && (end === null || p[1] > end)) end = p[1];
+        if (p[0].slice(0, 4) === y && (minIn === null || p[1] < minIn)) minIn = p[1];
+      });
+      const start = prevEnd !== null ? prevEnd : minIn;
+      if (end !== null && start !== null && end >= start) map[y].distance = end - start;
+      if (end !== null) prevEnd = end;
+    });
+    return years.map(function (y) { return map[y]; });
+  }
+
   const api = {
+    classifyService: classifyService,
+    parseServiceNotes: parseServiceNotes,
+    yearlySummary: yearlySummary,
     toNum: toNum,
     round: round,
     daysBetween: daysBetween,
