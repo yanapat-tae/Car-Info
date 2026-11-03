@@ -12,7 +12,7 @@
   const S = window.CarStore;
   const Charts = window.CarCharts;
 
-  const APP_VERSION = '1.1.2';
+  const APP_VERSION = '1.1.3';
   const TABS = ['dashboard', 'fuel', 'service', 'settings'];
   const LAST_EXPORT_KEY = 'carinfo.lastExport';
   const BACKUP_SNOOZE_KEY = 'carinfo.backupSnoozeUntil';
