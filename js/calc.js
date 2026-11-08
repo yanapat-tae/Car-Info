@@ -198,40 +198,92 @@
     return s.type;
   }
 
+  /** รายการนี้นับเป็นงานประเภท t ไหม (ประเภทหลัก หรือ "งานอื่นที่ทำด้วย") */
+  function coversType(s, t) {
+    return s.type === t || (Array.isArray(s.alsoTypes) && s.alsoTypes.indexOf(t) >= 0);
+  }
+
+  function latestOf(list) {
+    let best = null;
+    list.forEach(function (s) {
+      if (!best) { best = s; return; }
+      const byDate = String(s.date).localeCompare(String(best.date));
+      const byOdo = (toNum(s.odometer) || 0) - (toNum(best.odometer) || 0);
+      if (byDate > 0 || (byDate === 0 && byOdo > 0)) best = s;
+    });
+    return best;
+  }
+
   /**
-   * สร้างรายการแจ้งเตือนจากประวัติซ่อมบำรุง
-   * ใช้ "บันทึกล่าสุด" ของแต่ละประเภทเท่านั้น (ทำรายการใหม่แล้ว อันเก่าถือว่าเสร็จแล้ว)
-   * status: 'overdue' (เลยกำหนด), 'soon' (ใกล้ถึง), 'ok'
+   * สร้างรายการแจ้งเตือนครั้งถัดไป
+   * ที่มาของกำหนด 2 แบบ:
+   *  1) 'manual'   — ใส่ "ครั้งถัดไป" ไว้เองในรายการล่าสุด (มีสิทธิ์ก่อน)
+   *  2) 'interval' — คำนวณจากรอบที่ตั้งไว้: เลขไมล์ครั้งล่าสุด + รอบ km / วันที่ล่าสุด + รอบเดือน
+   * opts.intervals = { oil: { km: 8000, months: 6 }, ... }
+   * status: 'overdue' เลยกำหนด, 'soon' ใกล้ถึง, 'ok' ปกติ, 'nohistory' ตั้งรอบไว้แต่ยังไม่เคยบันทึก
    */
   function computeReminders(services, currentOdo, todayStr, opts) {
     const soonKm = (opts && opts.soonKm) || 1000;
     const soonDays = (opts && opts.soonDays) || 30;
-    const latest = {};
-    (services || []).forEach(function (s) {
-      const key = reminderKey(s);
-      const prev = latest[key];
-      if (!prev) { latest[key] = s; return; }
-      const byDate = String(s.date).localeCompare(String(prev.date));
-      const byOdo = (toNum(s.odometer) || 0) - (toNum(prev.odometer) || 0);
-      if (byDate > 0 || (byDate === 0 && byOdo > 0)) latest[key] = s;
+    const intervals = (opts && opts.intervals) || {};
+    const list = services || [];
+    const cur = currentOdo === undefined ? null : currentOdo;
+
+    // ประเภทที่ต้องพิจารณา
+    const keys = [];
+    function addKey(k) { if (keys.indexOf(k) < 0) keys.push(k); }
+    list.forEach(function (s) {
+      addKey(reminderKey(s));
+      (s.alsoTypes || []).forEach(function (t) { if (t !== 'other') addKey(t); });
+    });
+    Object.keys(intervals).forEach(function (k) {
+      const iv = intervals[k];
+      if (iv && (toNum(iv.km) > 0 || toNum(iv.months) > 0)) addKey(k);
     });
 
-    const rank = { overdue: 0, soon: 1, ok: 2 };
+    const rank = { overdue: 0, soon: 1, ok: 2, nohistory: 3 };
     const out = [];
-    Object.keys(latest).forEach(function (key) {
-      const s = latest[key];
-      const nextKm = toNum(s.nextKm);
-      const nextDate = s.nextDate || null;
-      if (nextKm === null && !nextDate) return;
+    keys.forEach(function (key) {
+      const isOther = key.indexOf('other:') === 0;
+      const candidates = list.filter(function (s) { return isOther ? reminderKey(s) === key : coversType(s, key); });
+      const latest = latestOf(candidates);
+      const iv = isOther ? null : intervals[key];
+      const ivKm = iv ? toNum(iv.km) : null;
+      const ivMonths = iv ? toNum(iv.months) : null;
+      const hasIv = (ivKm > 0) || (ivMonths > 0);
 
-      const kmLeft = nextKm !== null && currentOdo !== null && currentOdo !== undefined ? nextKm - currentOdo : null;
+      if (!latest) {
+        if (hasIv) out.push({ key: key, service: null, status: 'nohistory', basis: 'interval', interval: iv,
+          nextKm: null, nextDate: null, kmLeft: null, daysLeft: null, lastOdo: null });
+        return;
+      }
+
+      let nextKm = null, nextDate = null, basis = null;
+      const manual = reminderKey(latest) === key && (toNum(latest.nextKm) !== null || latest.nextDate);
+      if (manual) {
+        nextKm = toNum(latest.nextKm);
+        nextDate = latest.nextDate || null;
+        basis = 'manual';
+      } else if (hasIv) {
+        const lastOdo = toNum(latest.odometer);
+        if (ivKm > 0 && lastOdo !== null) nextKm = lastOdo + ivKm;
+        if (ivMonths > 0) nextDate = addMonths(latest.date, ivMonths);
+        basis = 'interval';
+      }
+      if (nextKm === null && !nextDate) {
+        if (basis === 'interval') out.push({ key: key, service: latest, status: 'nohistory', basis: basis, interval: iv,
+          nextKm: null, nextDate: null, kmLeft: null, daysLeft: null, lastOdo: null, noOdometer: true });
+        return;
+      }
+
+      const kmLeft = nextKm !== null && cur !== null ? nextKm - cur : null;
       const daysLeft = nextDate ? daysBetween(todayStr, nextDate) : null;
-
       let status = 'ok';
       if ((kmLeft !== null && kmLeft <= 0) || (daysLeft !== null && daysLeft < 0)) status = 'overdue';
       else if ((kmLeft !== null && kmLeft <= soonKm) || (daysLeft !== null && daysLeft <= soonDays)) status = 'soon';
 
-      out.push({ key: key, service: s, nextKm: nextKm, nextDate: nextDate, kmLeft: kmLeft, daysLeft: daysLeft, status: status });
+      out.push({ key: key, service: latest, nextKm: nextKm, nextDate: nextDate, kmLeft: kmLeft, daysLeft: daysLeft,
+        status: status, basis: basis, interval: iv || null, lastOdo: toNum(latest.odometer) });
     });
 
     out.sort(function (a, b) {
@@ -308,16 +360,33 @@
     ['inspection', /เช[็ค]?[คก]ระยะ/i]
   ];
 
-  function classifyService(text) {
-    let best = null;
+  /**
+   * หาทุกประเภทงานในข้อความ เรียงตามลำดับที่ปรากฏ
+   * ถ้าคำซ้อนกัน (เช่น "กรองแอร์" มีคำว่า "แอร์") ใช้คำที่ยาวกว่า
+   */
+  function classifyAll(text) {
+    const hits = [];
     TYPE_KEYWORDS.forEach(function (pair) {
-      const m = pair[1].exec(text);
-      if (!m) return;
-      if (!best || m.index < best.index || (m.index === best.index && m[0].length > best.len)) {
-        best = { type: pair[0], index: m.index, len: m[0].length };
+      const re = new RegExp(pair[1].source, pair[1].flags.replace('g', '') + 'g');
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        hits.push({ type: pair[0], start: m.index, end: m.index + m[0].length });
+        if (!m[0].length) re.lastIndex++;
       }
     });
-    return best ? best.type : 'other';
+    hits.sort(function (a, b) { return (a.start - b.start) || ((b.end - b.start) - (a.end - a.start)); });
+    const taken = [];
+    const types = [];
+    hits.forEach(function (h) {
+      if (taken.some(function (t) { return h.start < t.end && t.start < h.end; })) return;
+      taken.push(h);
+      if (types.indexOf(h.type) < 0) types.push(h.type);
+    });
+    return types;
+  }
+
+  function classifyService(text) {
+    return classifyAll(text)[0] || 'other';
   }
 
   function parseNoteDate(d, m, y) {
@@ -369,6 +438,7 @@
         title = at[1].trim(); shop = at[2].trim();
       }
 
+      const types = classifyAll(rest);
       rows.push({
         line: i + 1,
         date: date,
@@ -376,7 +446,8 @@
         odoNote: odoNote,
         title: title,
         shop: shop,
-        type: classifyService(rest),
+        type: (types[0] || 'other'),
+        alsoTypes: types.slice(1),
         duplicate: !!seen[date + '|' + title]
       });
     });
@@ -423,6 +494,8 @@
 
   const api = {
     classifyService: classifyService,
+    classifyAll: classifyAll,
+    coversType: coversType,
     parseServiceNotes: parseServiceNotes,
     yearlySummary: yearlySummary,
     toNum: toNum,

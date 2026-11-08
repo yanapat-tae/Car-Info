@@ -129,7 +129,7 @@ test('นำเข้าจากโน้ต: แยกวันที่ เ�
   ].join('\n');
   const r = C.parseServiceNotes(text, [{ date: '2024-03-15', title: 'เปลี่ยนกรองแอร์ ใบปัดน้ำฝน' }]);
   assert.equal(r.rows.length, 5);
-  assert.deepEqual(r.rows[0], { line: 3, date: '2024-02-01', odometer: 10000, odoNote: '', title: 'เปลี่ยนน้ำมันเครื่อง 5W-30', shop: 'ร้านเอ', type: 'oil', duplicate: false });
+  assert.deepEqual(r.rows[0], { line: 3, date: '2024-02-01', odometer: 10000, odoNote: '', title: 'เปลี่ยนน้ำมันเครื่อง 5W-30', shop: 'ร้านเอ', type: 'oil', alsoTypes: [], duplicate: false });
   assert.equal(r.rows[1].odometer, null);
   assert.equal(r.rows[1].type, 'cabin_filter');
   assert.equal(r.rows[1].duplicate, true, 'มีอยู่แล้ว -> ไม่นำเข้าซ้ำ');
@@ -151,4 +151,42 @@ test('สรุปรายปี: ค่าใช้จ่าย ระยะ�
     ['2024', 0, 2000, 1, 6000],
     ['2025', 2900, 900, 0, 12000]
   ]);
+});
+
+test('หลายงานในบรรทัดเดียว: แยกทุกประเภท และไม่นับคำซ้อน', () => {
+  assert.deepEqual(C.classifyAll('เปลี่ยนน้ำมันเครื่อง, น้ำมันเกียร์, กรองเกียร์, ล้างกรองอากาศ'), ['oil', 'transmission', 'air_filter']);
+  assert.deepEqual(C.classifyAll('เปลี่ยนกรองแอร์'), ['cabin_filter'], '"กรองแอร์" ไม่นับเป็น "ระบบแอร์"');
+  assert.deepEqual(C.classifyAll('เปลี่ยนผ้าเบรค น้ำมันเบรค'), ['brakes', 'brake_fluid']);
+  const r = C.parseServiceNotes('1/1/2025 100 เปลี่ยนน้ำมันเครื่อง, กรองแอร์');
+  assert.equal(r.rows[0].type, 'oil');
+  assert.deepEqual(r.rows[0].alsoTypes, ['cabin_filter']);
+});
+
+test('รอบการดูแล: คำนวณครั้งถัดไปจากครั้งล่าสุดที่ทำงานนั้น (รวมงานที่ทำพ่วง)', () => {
+  const services = [
+    { id: 'a', type: 'transmission', date: '2025-02-08', odometer: 152925 },
+    { id: 'b', type: 'oil', alsoTypes: ['transmission'], date: '2025-12-26', odometer: 164249 },
+    { id: 'c', type: 'oil', alsoTypes: ['cabin_filter'], date: '2026-06-14', odometer: 172528 },
+    { id: 'd', type: 'coolant', date: '2025-01-25', odometer: 152180 }
+  ];
+  const intervals = { oil: { km: 8000 }, transmission: { km: 30000 }, coolant: { km: 20000 }, brake_fluid: { km: 30000, months: 24 } };
+  const r = C.computeReminders(services, 174455, '2026-11-08', { intervals });
+  const by = Object.fromEntries(r.map(x => [x.key, x]));
+  assert.equal(by.oil.nextKm, 180528);
+  assert.equal(by.oil.kmLeft, 6073);
+  assert.equal(by.oil.status, 'ok');
+  assert.equal(by.transmission.service.id, 'b', 'น้ำมันเกียร์ที่ทำพ่วงกับน้ำมันเครื่องนับเป็นครั้งล่าสุด');
+  assert.equal(by.transmission.nextKm, 194249);
+  assert.equal(by.coolant.nextKm, 172180);
+  assert.equal(by.coolant.status, 'overdue');
+  assert.equal(by.brake_fluid.status, 'nohistory');
+  assert.equal(by.cabin_filter, undefined, 'ไม่ได้ตั้งรอบ และไม่ได้ใส่ครั้งถัดไป -> ไม่เตือน');
+  assert.deepEqual(r.map(x => x.status), ['overdue', 'ok', 'ok', 'nohistory']);
+});
+
+test('รอบการดูแล: "ครั้งถัดไป" ที่ใส่เองมีสิทธิ์ก่อนรอบ', () => {
+  const r = C.computeReminders([{ id: 'a', type: 'oil', date: '2026-01-01', odometer: 10000, nextKm: 15000 }],
+    12000, '2026-02-01', { intervals: { oil: { km: 8000 } } });
+  assert.equal(r[0].nextKm, 15000);
+  assert.equal(r[0].basis, 'manual');
 });
