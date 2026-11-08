@@ -12,7 +12,7 @@
   const S = window.CarStore;
   const Charts = window.CarCharts;
 
-  const APP_VERSION = '1.1.3';
+  const APP_VERSION = '1.2.0';
   const TABS = ['dashboard', 'fuel', 'service', 'settings'];
   const LAST_EXPORT_KEY = 'carinfo.lastExport';
   const BACKUP_SNOOZE_KEY = 'carinfo.backupSnoozeUntil';
@@ -22,6 +22,21 @@
   const COLOR_SERVICE = '#2f9fd6';
 
   let state = S.load();
+
+  // รอบการดูแลเริ่มต้น (กรอกไว้ให้ในฟอร์มตั้งรอบครั้งแรก แก้ได้)
+  const DEFAULT_INTERVALS = { oil: { km: 8000 }, transmission: { km: 30000 }, coolant: { km: 20000 }, brake_fluid: { km: 30000 } };
+
+  // ย้ายข้อมูลเก่า: รายการที่นำเข้าจากโน้ตก่อน v1.2 ยังไม่มี "งานที่ทำด้วย" -> หาจากข้อความเดิม
+  (function migrateAlsoTypes() {
+    let changed = false;
+    state.services.forEach(function (s) {
+      if (s.source === 'notes' && !Array.isArray(s.alsoTypes)) {
+        s.alsoTypes = C.classifyAll(String(s.title || '')).filter(function (t) { return t !== s.type; });
+        changed = true;
+      }
+    });
+    if (changed) S.save(state);
+  })();
   let tab = 'dashboard';
   let selectedYear = null; // ปีที่เลือกดูในสรุปรายปี
 
@@ -156,7 +171,7 @@
     const services = servicesFor(v.id);
     const econ = C.computeFuelEconomy(fuel);
     const odo = C.currentOdometer(fuel, services);
-    const reminders = C.computeReminders(services, odo, todayStr());
+    const reminders = C.computeReminders(services, odo, todayStr(), { intervals: v.intervals || {} });
     return { fuel: fuel, services: services, econ: econ, odo: odo, reminders: reminders };
   }
 
@@ -239,7 +254,7 @@
       '</div>';
 
     // แจ้งเตือน
-    const due = d.reminders.filter(function (r) { return r.status !== 'ok'; });
+    const due = d.reminders.filter(function (r) { return r.status === 'overdue' || r.status === 'soon'; });
     h += '<h2 class="section-title">ถึงกำหนดดูแล <a href="#service">ดูทั้งหมด</a></h2>';
     if (due.length) h += '<div class="list glass">' + due.slice(0, 4).map(reminderItem).join('') + '</div>';
     else h += '<div class="notice">' + (d.reminders.length
@@ -297,20 +312,45 @@
       }).join('') + '</tbody></table></details>';
   }
 
+  function alsoLabel(s) {
+    return (s.alsoTypes || []).map(function (t) { return TYPE_BY_ID[t] ? TYPE_BY_ID[t].label : ''; }).filter(Boolean).join(', ');
+  }
+
   function reminderItem(r) {
     const s = r.service;
-    const t = TYPE_BY_ID[s.type] || TYPE_BY_ID.other;
+    const t = TYPE_BY_ID[r.key] || (s && TYPE_BY_ID[s.type]) || TYPE_BY_ID.other;
+    const name = TYPE_BY_ID[r.key] ? t.label : typeLabel(s);
+    const ivText = r.interval ? [r.interval.km ? 'ทุก ' + fmtNum(+r.interval.km) + ' km' : '', r.interval.months ? 'ทุก ' + fmtNum(+r.interval.months) + ' เดือน' : '']
+      .filter(Boolean).join(' หรือ ') : '';
+
+    if (r.status === 'nohistory') {
+      return '<button class="item" data-action="add-service" data-type="' + esc(r.key) + '">' +
+        '<span class="item-icon blue">' + icon(t.icon) + '</span>' +
+        '<span class="item-main"><span class="item-title">' + esc(name) + ' <span class="badge">ยังไม่มีข้อมูล</span></span>' +
+        '<span class="item-sub">' + esc(ivText) + '</span>' +
+        '<span class="item-note">' + (r.noOdometer ? 'ครั้งล่าสุดไม่มีเลขไมล์ — แตะเพื่อบันทึกครั้งใหม่' : 'ยังไม่เคยบันทึก — แตะเพื่อบันทึกครั้งล่าสุดที่ทำ') + '</span></span></button>';
+    }
+
     const label = { overdue: 'เลยกำหนด', soon: 'ใกล้ถึง', ok: 'ปกติ' }[r.status];
     const ic = { overdue: 'alert', soon: 'clock', ok: 'check' }[r.status];
     const parts = [];
-    if (r.nextKm !== null) parts.push('ที่ ' + fmtNum(r.nextKm) + ' km' + (r.kmLeft !== null ? ' (' + relKm(r.kmLeft) + ')' : ''));
+    if (r.nextKm !== null) parts.push('ครบที่ ' + fmtNum(r.nextKm) + ' km' + (r.kmLeft !== null ? ' (' + relKm(r.kmLeft) + ')' : ''));
     if (r.nextDate) parts.push(fmtDate(r.nextDate) + ' (' + relDays(r.daysLeft) + ')');
+
+    // แถบความคืบหน้า: ใช้ไปแล้วกี่ % ของรอบ (ตามระยะทาง)
+    let bar = '';
+    if (r.nextKm !== null && r.kmLeft !== null && r.lastOdo !== null && r.nextKm > r.lastOdo) {
+      const pct = Math.max(0, Math.min(1, 1 - r.kmLeft / (r.nextKm - r.lastOdo)));
+      bar = '<span class="progress ' + r.status + '" role="img" aria-label="ใช้ไปแล้ว ' + Math.round(pct * 100) + '% ของรอบ"><i style="width:' + (pct * 100).toFixed(1) + '%"></i></span>';
+    }
+
     return '<button class="item" data-action="edit-service" data-id="' + esc(s.id) + '">' +
       '<span class="item-icon blue">' + icon(t.icon) + '</span>' +
-      '<span class="item-main"><span class="item-title">' + esc(typeLabel(s)) +
+      '<span class="item-main"><span class="item-title">' + esc(name) +
       ' <span class="badge ' + r.status + '">' + icon(ic) + label + '</span></span>' +
-      '<span class="item-sub">' + esc(parts.join(' · ')) + '</span>' +
-      '<span class="item-note">ทำล่าสุด ' + esc(fmtDate(s.date)) + (s.odometer ? ' · ' + fmtNum(+s.odometer) + ' km' : '') + '</span></span>' +
+      '<span class="item-sub">' + esc(parts.join(' · ')) + '</span>' + bar +
+      '<span class="item-note">ทำล่าสุด ' + esc(fmtDate(s.date)) + (s.odometer ? ' · ' + fmtNum(+s.odometer) + ' km' : '') +
+      (r.basis === 'interval' && ivText ? ' · ' + esc(ivText) : r.basis === 'manual' ? ' · กำหนดเอง' : '') + '</span></span>' +
       '</button>';
   }
 
@@ -376,12 +416,13 @@
     const total = d.services.reduce(function (a, s) { return a + (C.toNum(s.cost) || 0); }, 0);
     h += '<div class="tiles">' +
       tile('ค่าซ่อมบำรุงรวม', fmtMoney(total, 0), '', fmtNum(d.services.length) + ' รายการ') +
-      tile('ต้องดูแล', fmtNum(d.reminders.filter(function (r) { return r.status !== 'ok'; }).length), 'รายการ', 'เลยกำหนด/ใกล้ถึง') +
+      tile('ต้องดูแล', fmtNum(d.reminders.filter(function (r) { return r.status === 'overdue' || r.status === 'soon'; }).length), 'รายการ', 'เลยกำหนด/ใกล้ถึง') +
       '</div>';
 
-    h += '<h2 class="section-title">กำหนดครั้งถัดไป</h2>';
+    h += '<h2 class="section-title">กำหนดครั้งถัดไป <button class="link" data-action="edit-intervals">ตั้งรอบ</button></h2>';
     if (d.reminders.length) h += '<div class="list glass">' + d.reminders.map(reminderItem).join('') + '</div>';
-    else h += '<div class="notice">ยังไม่มีกำหนดครั้งถัดไป — ใส่ “ครั้งถัดไป (km / วันที่)” ในฟอร์มซ่อมบำรุง แล้วแอปจะเตือนเมื่อเหลือไม่ถึง 1,000 km หรือ 30 วัน</div>';
+    else h += '<div class="notice">ยังไม่มีกำหนดครั้งถัดไป — กด <b>ตั้งรอบ</b> เพื่อบอกว่าแต่ละงานทำทุกกี่ km แล้วแอปจะคำนวณให้ว่าครบที่เลขไมล์เท่าไหร่</div>' +
+      '<button class="btn btn-primary btn-block" style="margin-top:10px" data-action="edit-intervals">' + icon('gauge') + 'ตั้งรอบการดูแล</button>';
 
     h += '<h2 class="section-title">ประวัติ <button class="link" data-action="import-notes">วางจากโน้ต</button></h2>';
     if (!d.services.length) {
@@ -401,10 +442,12 @@
       if (s.nextKm) next.push(fmtNum(+s.nextKm) + ' km');
       if (s.nextDate) next.push(fmtDate(s.nextDate));
       const note = [extra, s.shop, s.note].filter(Boolean).join(' · ');
+      const also = alsoLabel(s);
       return '<button class="item" data-action="edit-service" data-id="' + esc(s.id) + '">' +
         '<span class="item-icon blue">' + icon(t.icon) + '</span>' +
         '<span class="item-main"><span class="item-title">' + esc(typeLabel(s)) + '</span>' +
         '<span class="item-sub">' + esc(fmtDate(s.date)) + (s.odometer ? ' · ' + fmtNum(+s.odometer) + ' km' : '') + '</span>' +
+        (also ? '<span class="item-note">ทำด้วย: ' + esc(also) + '</span>' : '') +
         (note ? '<span class="item-note">' + esc(note) + '</span>' : '') +
         (next.length ? '<span class="item-note">ครั้งถัดไป: ' + esc(next.join(' หรือ ')) + '</span>' : '') +
         '</span><span class="item-end"><div class="big">' + (s.cost ? fmtMoney(+s.cost) : '–') + '</div></span></button>';
@@ -416,6 +459,7 @@
   function settingsView(v) {
     let h = '<h1 class="page-title">รถ & ตั้งค่า</h1>';
     h += '<h2 class="section-title">รถของฉัน <button class="link" data-action="add-vehicle">+ เพิ่มรถ</button></h2>';
+    if (v) h += '<button class="btn btn-block" style="margin-bottom:12px" data-action="edit-intervals">' + icon('gauge') + 'รอบการดูแลของ ' + esc(v.name) + '</button>';
     if (state.vehicles.length) {
       h += '<div class="list glass">' + state.vehicles.map(function (x) {
         const sub = [x.make, x.model, x.year].filter(Boolean).join(' ');
@@ -551,6 +595,52 @@
     return h;
   }
 
+  /* ---------- ตั้งรอบการดูแล ---------- */
+  function openIntervalsForm() {
+    const v = activeVehicle();
+    if (!v) { toast('เพิ่มรถก่อน'); return; }
+    const saved = v.intervals;
+    const ivs = saved || DEFAULT_INTERVALS; // ครั้งแรกกรอกค่าเริ่มต้นไว้ให้
+    const d = vehicleData(v);
+    const types = SERVICE_TYPES.filter(function (t) { return t.id !== 'other'; });
+    openSheet('รอบการดูแล · ' + v.name,
+      '<form class="form" id="ivForm" novalidate>' +
+      '<p class="hint" style="margin:0">ใส่ว่าแต่ละงานต้องทำทุกกี่ <b>km</b> และ/หรือทุกกี่ <b>เดือน</b> (อะไรถึงก่อนเตือนก่อน) เว้นว่าง = ไม่เตือน<br>' +
+      'แอปจะนับจาก<b>ครั้งล่าสุด</b>ที่ทำงานนั้น เช่น เปลี่ยนน้ำมันเครื่องล่าสุดที่ 172,528 + 8,000 = ครบที่ 180,528 km<br>' +
+      'ตัวเลขที่เหมาะสมให้ดูจากคู่มือรถหรือช่าง' + (saved ? '' : ' · <b>กรอกค่าตั้งต้นไว้ให้แล้ว กดบันทึกเพื่อใช้</b>') + '</p>' +
+      '<div class="iv-head"><span>งาน</span><span>ทุก km</span><span>ทุกเดือน</span></div>' +
+      types.map(function (t) {
+        const iv = ivs[t.id] || {};
+        const last = C.computeReminders(d.services, d.odo, todayStr(), { intervals: (function () { const o = {}; o[t.id] = { km: 1 }; return o; })() })
+          .find(function (r) { return r.key === t.id; });
+        const lastTxt = last && last.service ? 'ล่าสุด ' + fmtDate(last.service.date) + (last.service.odometer ? ' · ' + fmtNum(+last.service.odometer) + ' km' : '') : 'ยังไม่มีประวัติ';
+        return '<div class="iv-row"><div class="iv-name"><b>' + esc(t.label) + '</b><small>' + esc(lastTxt) + '</small></div>' +
+          '<input name="km_' + t.id + '" inputmode="numeric" placeholder="–" aria-label="' + esc(t.label) + ' ทุกกี่ km" value="' + attr(iv.km) + '">' +
+          '<input name="mo_' + t.id + '" inputmode="numeric" placeholder="–" aria-label="' + esc(t.label) + ' ทุกกี่เดือน" value="' + attr(iv.months) + '">' +
+          '</div>';
+      }).join('') +
+      '<p class="form-error" hidden></p>' +
+      '<div class="form-actions"><button class="btn btn-primary btn-block" type="submit">บันทึก</button></div></form>');
+
+    $('#ivForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      const f = e.target;
+      const out = {};
+      for (let i = 0; i < types.length; i++) {
+        const id = types[i].id;
+        const kmRaw = strVal(f, 'km_' + id), moRaw = strVal(f, 'mo_' + id);
+        const km = numVal(f, 'km_' + id), mo = numVal(f, 'mo_' + id);
+        if ((kmRaw && !(km > 0)) || (moRaw && !(mo > 0))) return formError(f, types[i].label + ': ต้องเป็นตัวเลขมากกว่า 0');
+        if (km > 0 || mo > 0) out[id] = { km: km > 0 ? Math.round(km) : null, months: mo > 0 ? Math.round(mo) : null };
+      }
+      state.vehicles = state.vehicles.map(function (x) { return x.id === v.id ? Object.assign({}, x, { intervals: out }) : x; });
+      persist(); closeSheet();
+      if (tab !== 'service') location.hash = '#service';
+      render();
+      toast('บันทึกรอบแล้ว · ' + Object.keys(out).length + ' งาน');
+    });
+  }
+
   /* ---------- นำเข้าจากโน้ต ---------- */
   function openNotesImport() {
     const v = activeVehicle();
@@ -622,6 +712,7 @@
           id: S.uid(), vehicleId: v.id, type: r.type, title: r.title, date: r.date,
           odometer: r.odometer, cost: null, shop: r.shop,
           note: r.odoNote ? 'เลขไมล์ในโน้ต: ' + r.odoNote : '',
+          alsoTypes: C.classifyAll(r.title).filter(function (t) { return t !== r.type; }),
           nextKm: null, nextDate: null, source: 'notes'
         });
       });
@@ -880,12 +971,18 @@
   }
 
   /* ---------- ฟอร์มซ่อมบำรุง ---------- */
-  function openServiceForm(s) {
+  function openServiceForm(s, presetType) {
     const v = activeVehicle();
     if (!v) return;
     const isNew = !s;
     const d = vehicleData(v);
-    s = s || { date: todayStr(), type: 'oil' };
+    s = s || { date: todayStr(), type: TYPE_BY_ID[presetType] ? presetType : 'oil' };
+    const ivs = v.intervals || {};
+    function ivHint(type) {
+      const iv = ivs[type];
+      if (!iv || !(iv.km || iv.months)) return '';
+      return 'ถ้าเว้นว่าง แอปจะใช้รอบที่ตั้งไว้: ' + [iv.km ? 'ทุก ' + fmtNum(+iv.km) + ' km' : '', iv.months ? 'ทุก ' + iv.months + ' เดือน' : ''].filter(Boolean).join(' หรือ ');
+    }
 
     openSheet(isNew ? 'บันทึกซ่อมบำรุง' : 'แก้ไขซ่อมบำรุง',
       '<form class="form" id="serviceForm" novalidate>' +
@@ -893,6 +990,11 @@
         return '<option value="' + t.id + '"' + (t.id === s.type ? ' selected' : '') + '>' + esc(t.label) + '</option>';
       }).join('') + '</select>') +
       field('รายละเอียด', '<input name="title" maxlength="60" placeholder="เช่น 0W-20 สังเคราะห์แท้ 4 ลิตร" value="' + attr(s.title) + '">') +
+      '<div class="field"><span>ทำงานอื่นด้วยในครั้งนี้ (ไม่บังคับ)</span><div class="chips" id="alsoChips">' +
+      SERVICE_TYPES.filter(function (t) { return t.id !== 'other'; }).map(function (t) {
+        const on = (s.alsoTypes || []).indexOf(t.id) >= 0;
+        return '<label class="chip chip-check"' + (t.id === s.type ? ' hidden' : '') + '><input type="checkbox" name="also" value="' + t.id + '"' + (on ? ' checked' : '') + '>' + esc(t.label) + '</label>';
+      }).join('') + '</div><small class="hint">เช่น เปลี่ยนน้ำมันเครื่อง + กรองแอร์ ในครั้งเดียว — แต่ละงานจะนับรอบของตัวเองถูกต้อง</small></div>' +
       '<div class="row">' +
       field('วันที่', '<input type="date" name="date" required value="' + attr(s.date) + '">') +
       field('เลขไมล์ (km)', '<input name="odometer" inputmode="numeric" placeholder="' + (d.odo !== null ? 'ล่าสุด ' + fmtNum(d.odo) : '') + '" value="' + attr(s.odometer) + '">') +
@@ -905,7 +1007,7 @@
         '<div class="chips"><button type="button" class="chip" data-km="5000">+5,000</button><button type="button" class="chip" data-km="10000">+10,000</button>' +
         '<button type="button" class="chip" data-km="20000">+20,000</button><button type="button" class="chip" data-km="40000">+40,000</button>' +
         '<button type="button" class="chip" data-km="clear">ล้าง</button></div>',
-        'บวกจากเลขไมล์ของรายการนี้ · ระยะที่เหมาะสมดูจากคู่มือรถของคุณ') +
+        'บวกจากเลขไมล์ของรายการนี้ · ระยะที่เหมาะสมดูจากคู่มือรถของคุณ<br><b id="ivHint">' + esc(ivHint(s.type)) + '</b>') +
       field('หรือวันที่', '<input type="date" name="nextDate" value="' + attr(s.nextDate) + '">' +
         '<div class="chips"><button type="button" class="chip" data-mo="3">+3 เดือน</button><button type="button" class="chip" data-mo="6">+6 เดือน</button>' +
         '<button type="button" class="chip" data-mo="12">+1 ปี</button><button type="button" class="chip" data-mo="24">+2 ปี</button>' +
@@ -917,8 +1019,18 @@
       '</div></form>');
 
     const form = $('#serviceForm');
+    form.elements.type.addEventListener('change', function () {
+      const tp = form.elements.type.value;
+      $('#ivHint').textContent = ivHint(tp);
+      $$('#alsoChips .chip-check').forEach(function (c) {
+        const inp = c.querySelector('input');
+        c.hidden = inp.value === tp;
+        if (c.hidden) inp.checked = false;
+      });
+    });
     form.addEventListener('click', function (e) {
       const chip = e.target.closest('.chip');
+      if (chip && chip.classList.contains('chip-check')) return;
       if (!chip) return;
       if (chip.dataset.km) {
         if (chip.dataset.km === 'clear') { form.elements.nextKm.value = ''; return; }
@@ -953,7 +1065,8 @@
       const rec = Object.assign({}, s, {
         id: s.id || S.uid(), vehicleId: s.vehicleId || v.id, type: type, title: title, date: date,
         odometer: odometer, cost: cost, shop: strVal(form, 'shop'), note: strVal(form, 'note'),
-        nextKm: nextKm, nextDate: nextDate || null
+        nextKm: nextKm, nextDate: nextDate || null,
+        alsoTypes: $$('#alsoChips input:checked').map(function (c) { return c.value; }).filter(function (t) { return t !== type; })
       });
       if (isNew) state.services.push(rec);
       else state.services = state.services.map(function (x) { return x.id === rec.id ? rec : x; });
@@ -1089,7 +1202,7 @@
       case 'add-fuel': return openFuelForm();
       case 'edit-fuel': return openFuelForm(state.fuelLogs.find(function (x) { return x.id === id; }));
       case 'delete-fuel': return deleteFuel(id);
-      case 'add-service': return openServiceForm();
+      case 'add-service': return openServiceForm(null, btn.dataset.type);
       case 'edit-service': return openServiceForm(state.services.find(function (x) { return x.id === id; }));
       case 'delete-service': return deleteService(id);
       case 'export-json': return exportJSON();
@@ -1099,6 +1212,7 @@
       case 'undo-import': return undoImport();
       case 'clear-all': return clearAll();
       case 'import-notes': return openNotesImport();
+      case 'edit-intervals': return openIntervalsForm();
       case 'pick-year': selectedYear = btn.dataset.year; return render();
       case 'snooze-backup':
         try { localStorage.setItem(BACKUP_SNOOZE_KEY, String(Date.now() + 7 * 86400000)); } catch (err) { /* ignore */ }
