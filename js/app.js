@@ -12,7 +12,7 @@
   const S = window.CarStore;
   const Charts = window.CarCharts;
 
-  const APP_VERSION = '1.2.0';
+  const APP_VERSION = '1.2.1';
   const TABS = ['dashboard', 'fuel', 'service', 'settings'];
   const LAST_EXPORT_KEY = 'carinfo.lastExport';
   const BACKUP_SNOOZE_KEY = 'carinfo.backupSnoozeUntil';
@@ -24,6 +24,32 @@
   let state = S.load();
 
   // รอบการดูแลเริ่มต้น (กรอกไว้ให้ในฟอร์มตั้งรอบครั้งแรก แก้ได้)
+  /*
+   * ค่าแนะนำทั่วไปสำหรับใช้งานในไทย (อากาศร้อน รถติด ฝุ่น = "ใช้งานหนัก" ตามนิยามผู้ผลิตส่วนใหญ่)
+   * เป็นช่วงกลางๆ ไม่ใช่ค่าของรถรุ่นใดรุ่นหนึ่ง — ควรเทียบกับคู่มือรถเสมอ
+   * km / months = ค่าที่เติมให้เมื่อกด "ใช้ค่านี้"
+   */
+  const RECOMMENDED = {
+    oil: { text: '5,000–10,000 km หรือ 6 เดือน · สังเคราะห์แท้ ~8,000–10,000 · กึ่งสังเคราะห์ ~5,000–7,000', km: 8000, months: 6 },
+    oil_filter: { text: 'ทุกครั้งที่เปลี่ยนน้ำมันเครื่อง', km: 8000, months: 6 },
+    air_filter: { text: 'เปลี่ยน 20,000–40,000 km · เป่าทำความสะอาดทุก 10,000 km · ทางฝุ่นเยอะให้สั้นลง', km: 30000, months: null },
+    cabin_filter: { text: '10,000–20,000 km หรือ 12 เดือน · ช่วงฝุ่น PM2.5 ควรถี่ขึ้น', km: 15000, months: 12 },
+    tires: { text: '40,000–60,000 km หรือ 4–5 ปีนับจากปีผลิต · ดอกยางต้องเหลือเกิน 1.6 มม.', km: 50000, months: 60 },
+    alignment: { text: 'สลับยางทุก 10,000 km · ตั้งศูนย์ทุก 20,000 km หรือเมื่อรถกินซ้าย/ขวา', km: 10000, months: null },
+    brakes: { text: 'ตรวจทุก 10,000 km · ผ้าเบรกหน้ามักหมดที่ 30,000–50,000 km (ขึ้นกับการขับ)', km: 40000, months: null },
+    brake_fluid: { text: 'ทุก 2 ปี หรือ 40,000 km · น้ำมันเบรกดูดความชื้น อากาศชื้นแบบไทยเสื่อมเร็ว', km: 40000, months: 24 },
+    battery: { text: '2–3 ปี · อากาศร้อนทำให้แบตเสื่อมเร็วกว่าประเทศเมืองหนาว', km: null, months: 30 },
+    coolant: { text: '40,000–50,000 km หรือ 2–3 ปี · ชนิด Long Life ครั้งแรกอาจนานถึง ~100,000 km', km: 40000, months: 24 },
+    transmission: { text: 'เกียร์ออโต้ 40,000–60,000 km · บางยี่ห้อบอกว่าไม่ต้องเปลี่ยน แต่ร้อน+รถติดควรเปลี่ยน', km: 40000, months: null },
+    spark_plugs: { text: 'อิริเดียม/แพลทินัม 80,000–100,000 km · แบบธรรมดา 20,000–40,000 km', km: 80000, months: null },
+    wipers: { text: '6–12 เดือน · แดดแรงทำให้ยางปัดแข็งเร็ว', km: null, months: 12 },
+    ac: { text: 'ล้างแอร์ทุก 12 เดือน หรือ 20,000 km · ตรวจน้ำยาแอร์เมื่อเย็นน้อยลง', km: 20000, months: 12 },
+    inspection: { text: 'เช็กระยะทุก 10,000 km หรือ 6 เดือน', km: 10000, months: 6 },
+    tax: { text: 'ทุก 12 เดือน (ภาษีรถยนต์ + พ.ร.บ.)', km: null, months: 12 },
+    insurance: { text: 'ทุก 12 เดือน', km: null, months: 12 },
+    suspension: { text: 'ตรวจช่วงล่างทุก 20,000 km · โช้คอัพมักอยู่ได้ 80,000–100,000 km', km: 80000, months: null }
+  };
+
   const DEFAULT_INTERVALS = { oil: { km: 8000 }, transmission: { km: 30000 }, coolant: { km: 20000 }, brake_fluid: { km: 30000 } };
 
   // ย้ายข้อมูลเก่า: รายการที่นำเข้าจากโน้ตก่อน v1.2 ยังไม่มี "งานที่ทำด้วย" -> หาจากข้อความเดิม
@@ -607,14 +633,18 @@
       '<form class="form" id="ivForm" novalidate>' +
       '<p class="hint" style="margin:0">ใส่ว่าแต่ละงานต้องทำทุกกี่ <b>km</b> และ/หรือทุกกี่ <b>เดือน</b> (อะไรถึงก่อนเตือนก่อน) เว้นว่าง = ไม่เตือน<br>' +
       'แอปจะนับจาก<b>ครั้งล่าสุด</b>ที่ทำงานนั้น เช่น เปลี่ยนน้ำมันเครื่องล่าสุดที่ 172,528 + 8,000 = ครบที่ 180,528 km<br>' +
-      'ตัวเลขที่เหมาะสมให้ดูจากคู่มือรถหรือช่าง' + (saved ? '' : ' · <b>กรอกค่าตั้งต้นไว้ให้แล้ว กดบันทึกเพื่อใช้</b>') + '</p>' +
+      (saved ? '' : '<b>กรอกค่าตั้งต้นไว้ให้แล้ว กดบันทึกเพื่อใช้</b>') + '</p>' +
+      '<div class="notice small">“แนะนำ” = ค่าทั่วไปสำหรับใช้งานในไทย (ร้อน รถติด ฝุ่น ถือเป็น<b>การใช้งานหนัก</b>) ไม่ใช่ค่าของรถรุ่นใดรุ่นหนึ่ง — เทียบกับคู่มือรถหรือช่างก่อนใช้' +
+      '<br><button type="button" class="btn btn-sm" style="margin-top:8px" id="ivFillRec">ใช้ค่าแนะนำในช่องที่ว่าง</button></div>' +
       '<div class="iv-head"><span>งาน</span><span>ทุก km</span><span>ทุกเดือน</span></div>' +
       types.map(function (t) {
         const iv = ivs[t.id] || {};
         const last = C.computeReminders(d.services, d.odo, todayStr(), { intervals: (function () { const o = {}; o[t.id] = { km: 1 }; return o; })() })
           .find(function (r) { return r.key === t.id; });
         const lastTxt = last && last.service ? 'ล่าสุด ' + fmtDate(last.service.date) + (last.service.odometer ? ' · ' + fmtNum(+last.service.odometer) + ' km' : '') : 'ยังไม่มีประวัติ';
-        return '<div class="iv-row"><div class="iv-name"><b>' + esc(t.label) + '</b><small>' + esc(lastTxt) + '</small></div>' +
+        const rec = RECOMMENDED[t.id];
+        return '<div class="iv-row"><div class="iv-name"><b>' + esc(t.label) + '</b><small>' + esc(lastTxt) + '</small>' +
+          (rec ? '<small class="iv-rec">แนะนำ: ' + esc(rec.text) + ' <button type="button" class="link" data-rec="' + t.id + '">ใช้ค่านี้</button></small>' : '') + '</div>' +
           '<input name="km_' + t.id + '" inputmode="numeric" placeholder="–" aria-label="' + esc(t.label) + ' ทุกกี่ km" value="' + attr(iv.km) + '">' +
           '<input name="mo_' + t.id + '" inputmode="numeric" placeholder="–" aria-label="' + esc(t.label) + ' ทุกกี่เดือน" value="' + attr(iv.months) + '">' +
           '</div>';
@@ -622,7 +652,24 @@
       '<p class="form-error" hidden></p>' +
       '<div class="form-actions"><button class="btn btn-primary btn-block" type="submit">บันทึก</button></div></form>');
 
-    $('#ivForm').addEventListener('submit', function (e) {
+    const ivForm = $('#ivForm');
+    function applyRec(id, onlyEmpty) {
+      const rec = RECOMMENDED[id];
+      if (!rec) return;
+      const km = ivForm.elements['km_' + id], mo = ivForm.elements['mo_' + id];
+      if (onlyEmpty && (km.value.trim() || mo.value.trim())) return;
+      km.value = rec.km || '';
+      mo.value = rec.months || '';
+    }
+    ivForm.addEventListener('click', function (e) {
+      const b = e.target.closest('[data-rec]');
+      if (b) { applyRec(b.dataset.rec, false); return; }
+      if (e.target.closest('#ivFillRec')) {
+        Object.keys(RECOMMENDED).forEach(function (id) { applyRec(id, true); });
+        toast('เติมค่าแนะนำในช่องที่ว่างแล้ว — กดบันทึกเพื่อใช้');
+      }
+    });
+    ivForm.addEventListener('submit', function (e) {
       e.preventDefault();
       const f = e.target;
       const out = {};
