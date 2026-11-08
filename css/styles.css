@@ -390,3 +390,7 @@ details.card[open] > summary { margin-bottom: 12px; }
 .chip-check input { position: absolute; opacity: 0; pointer-events: none; }
 .chip-check:has(input:checked) { color: #fff; border-color: rgba(255, 51, 71, .6); background: rgba(255, 51, 71, .25); }
 .chip-check:has(input:focus-visible) { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.iv-name small.iv-rec { color: var(--text-2); margin-top: 2px; line-height: 1.4; }
+.iv-rec .link { font-size: 12.5px; }
+.iv-row { align-items: start; }
+.iv-row input { margin-top: 2px; }
